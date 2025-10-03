@@ -41,9 +41,9 @@ class LyMusicSearch(loader.Module):
             logger.error(f"Query error: {e}")
             return None
 
-    @loader.command(mode=loader.Mode.INLINE)
+    @loader.command()
     async def music(self, message: Message):
-        """Search music. Args: <song query>"""
+        """Search music with @lytubebot. Args: <song query>"""
         args = utils.get_args_raw(message)
         if not args:
             return await utils.answer(message, self.strings("no_args"))
@@ -83,9 +83,8 @@ class LyMusicSearch(loader.Module):
     @loader.command()
     async def musichelp(self, message: Message):
         """Show help"""
-        await self.inline.list(message, self.strings("name"), f"""
+        await utils.answer(message, f"""
 🆘 **Usage:**
-• Inline: `{self.inline.getmodname(self)} <song>`
 • Command: `.music <song>`
 
 Searches via @lytubebot. Start chat with it first (/start).
