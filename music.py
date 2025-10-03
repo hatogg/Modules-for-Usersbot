@@ -83,9 +83,7 @@ class LyMusicSearch(loader.Module):
     @loader.command()
     async def musichelp(self, message: Message):
         """Show help"""
-        await utils.answer(message, f"""
-🆘 **Usage:**
-• Command: `.music <song>`
-
+        await utils.answer(message, """
+🆘 **Usage:** `.music <song>`
 Searches via @lytubebot. Start chat with it first (/start).
         """)
