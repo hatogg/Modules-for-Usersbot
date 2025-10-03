@@ -1,8 +1,9 @@
-__version__ = (1, 3, 0)
+__version__ = (1, 4, 0)
 
 import aiohttp
 import logging
 import time
+from telethon import events
 from .. import loader, utils
 
 logger = logging.getLogger(__name__)
@@ -49,62 +50,68 @@ class AlertsUa(loader.Module):
         self.uid_map = {name: i+1 for i, name in enumerate(self.oblasts)}
         self.cache = {}  # {endpoint: {"data": data, "timestamp": time}}
         self.cache_ttl = 300  # 5 хвилин
-        self.alert_task = None  # Для циклу оновлення
-        self.alert_msg_id = None  # ID повідомлення для редагування
-        self.alert_chat_id = None  # ID чату для редагування
+        self.alert_task = None
+        self.alert_msg_id = None
+        self.alert_chat_id = None
 
     async def client_ready(self, client, db):
         self.client = client
         self.db = db
         self.token = self.get("token", None)
+        logger.info("Модуль AlertsUa ініціалізовано")
         if not self.token:
+            logger.warning("Токен не встановлено")
             await utils.answer(self, self.strings["no_token"])
 
     def get_cached(self, endpoint: str):
-        """Повертає кешовані дані або None, якщо застаріло."""
         if endpoint in self.cache:
             cached = self.cache[endpoint]
             if time.time() - cached["timestamp"] < self.cache_ttl:
                 logger.debug(f"Використано кеш для {endpoint}")
                 return cached["data"]
             else:
+                logger.debug(f"Кеш для {endpoint} застарів, видалено")
                 del self.cache[endpoint]
         return None
 
     async def api_request(self, endpoint: str):
-        """Загальний запит до API з кешуванням."""
         if not self.token:
+            logger.error("Токен відсутній")
             return None
         cached = self.get_cached(endpoint)
         if cached is not None:
+            logger.info(f"Повернуто кеш для {endpoint}")
+            await utils.answer(self, self.strings["using_cache"])
             return cached
 
+        logger.debug(f"Виконую запит до {endpoint}")
         url = f"https://api.alerts.in.ua{endpoint}?token={self.token}"
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(url) as resp:
+                    logger.debug(f"Отримана відповідь від {url} зі статусом {resp.status}")
                     if resp.status == 200:
                         data = await resp.json()
                         self.cache[endpoint] = {"data": data, "timestamp": time.time()}
+                        logger.info(f"Успішно кешовано дані для {endpoint}")
                         return data
                     elif resp.status == 429:
-                        logger.warning("Ліміт запитів перевищено")
+                        logger.warning(f"Ліміт запитів перевищено для {endpoint}")
                         return {"error": "Забагато запитів"}
                     else:
+                        logger.error(f"Помилка HTTP {resp.status} для {endpoint}")
                         return {"error": f"HTTP {resp.status}"}
             except Exception as e:
-                logger.error(f"Помилка API: {e}")
+                logger.error(f"Помилка API для {endpoint}: {e}")
                 return {"error": str(e)}
 
     async def get_active_alerts(self):
-        """Отримує активні тривоги."""
         data = await self.api_request("/v1/alerts/active.json")
         if "error" in data:
             return data
         return data.get("alerts", [])
 
     async def get_oblasts_status(self):
-        """Статус по областях (A/P/N)."""
         data = await self.api_request("/v1/iot/active_air_raid_alerts_by_oblast.json")
         if "error" in data or isinstance(data, str):
             return data
@@ -115,27 +122,27 @@ class AlertsUa(loader.Module):
             status_desc = {"A": "🔔 Активна", "P": "⚠️ Часткова", "N": "✅ Немає"}.get(status, "❓ Невідомо")
             status_map[oblast] = status_desc
         self.cache["/v1/iot/active_air_raid_alerts_by_oblast.json"] = {"data": status_map, "timestamp": time.time()}
+        logger.debug(f"Оброблено статус по областях: {len(status_map)} записів")
         return status_map
 
     async def get_specific_status(self, uid: str):
-        """Статус для конкретної локації."""
         data = await self.api_request(f"/v1/iot/active_air_raid_alerts/{uid}.json")
         if "error" in data or isinstance(data, str):
             return data
         status = data
         status_desc = {"A": "🔔 Активна", "P": "⚠️ Часткова", "N": "✅ Немає"}.get(status, "❓ Невідомо")
         self.cache[f"/v1/iot/active_air_raid_alerts/{uid}.json"] = {"data": status_desc, "timestamp": time.time()}
+        logger.debug(f"Статус для UID {uid}: {status_desc}")
         return status_desc
 
     async def get_history(self, uid: str):
-        """Історія тривог за місяць."""
         data = await self.api_request(f"/v1/regions/{uid}/alerts/month_ago.json")
         if "error" in data:
             return data
         return data.get("alerts", [])
 
     async def update_alerts(self):
-        """Цикл оновлення тривог у повідомленні."""
+        logger.info("Розпочато цикл оновлення тривог")
         while True:
             if not self.token or not self.alert_chat_id or not self.alert_msg_id:
                 logger.error("Немає даних для оновлення тривог")
@@ -143,6 +150,7 @@ class AlertsUa(loader.Module):
                 break
             try:
                 alerts = await self.get_active_alerts()
+                logger.debug(f"Отримані тривоги: {len(alerts)} записів")
                 if isinstance(alerts, dict) and "error" in alerts:
                     await self.client.edit_message(self.alert_chat_id, self.alert_msg_id, self.strings["error"].format(error=alerts["error"]))
                 elif not alerts:
@@ -159,11 +167,12 @@ class AlertsUa(loader.Module):
                     current_time = time.strftime("%H:%M", time.localtime())
                     text = self.strings["active_alerts"].format(list=alert_list, time=current_time)
                     await self.client.edit_message(self.alert_chat_id, self.alert_msg_id, text)
+                    logger.info(f"Оновлено тривоги о {current_time}")
             except Exception as e:
                 logger.error(f"Помилка оновлення тривог: {e}")
                 await self.client.send_message(self.alert_chat_id, f"❌ <b>Помилка оновлення: {e}</b>")
                 break
-            await asyncio.sleep(60)  # Оновлення кожні 60 секунд
+            await asyncio.sleep(60)
 
     @loader.command()
     async def settoken(self, message):
@@ -171,9 +180,11 @@ class AlertsUa(loader.Module):
         args = utils.get_args_raw(message)
         if not args:
             await utils.answer(message, self.strings["no_token"])
+            logger.warning("Спроба встановлення токена без аргументу")
             return
         self.token = args.strip()
         self.set("token", self.token)
+        logger.info("Токен успішно встановлено")
         await utils.answer(message, self.strings["set_token"])
 
     @loader.command()
@@ -181,14 +192,18 @@ class AlertsUa(loader.Module):
         """Показує активні тривоги."""
         if not self.token:
             await utils.answer(message, self.strings["no_token"])
+            logger.error("Відсутній токен")
             return
         await utils.answer(message, self.strings["checking"])
+        logger.debug("Початок отримання активних тривог")
         alerts = await self.get_active_alerts()
         if isinstance(alerts, dict) and "error" in alerts:
             await utils.answer(message, self.strings["error"].format(error=alerts["error"]))
+            logger.error(f"Помилка API: {alerts['error']}")
             return
         if not alerts:
             await utils.answer(message, self.strings["no_alerts"])
+            logger.info("Немає активних тривог")
             return
         alert_list = "\n\n".join([
             self.strings["alert_item"].format(
@@ -203,20 +218,25 @@ class AlertsUa(loader.Module):
         msg = await utils.answer(message, text)
         self.alert_msg_id = msg.id
         self.alert_chat_id = message.chat_id
+        logger.debug(f"Надіслано початкове повідомлення з ID {self.alert_msg_id}")
 
     @loader.command()
     async def startalerts(self, message):
         """Запускає оновлення тривог кожні хвилину в одному повідомленні."""
         if not self.token:
             await utils.answer(message, self.strings["no_token"])
+            logger.error("Відсутній токен при старті оновлення")
             return
         if self.alert_task and not self.alert_task.done():
             await utils.answer(message, self.strings["already_running"])
+            logger.info("Оновлення вже запущено")
             return
         await utils.answer(message, self.strings["checking"])
+        logger.debug("Початок ініціалізації оновлення тривог")
         alerts = await self.get_active_alerts()
         if isinstance(alerts, dict) and "error" in alerts:
             await utils.answer(message, self.strings["error"].format(error=alerts["error"]))
+            logger.error(f"Помилка API при старті: {alerts['error']}")
             return
         alert_list = "\n\n".join([
             self.strings["alert_item"].format(
@@ -232,6 +252,7 @@ class AlertsUa(loader.Module):
         self.alert_msg_id = msg.id
         self.alert_chat_id = message.chat_id
         self.alert_task = asyncio.create_task(self.update_alerts())
+        logger.info(f"Оновлення тривог запущено для повідомлення {self.alert_msg_id}")
         await utils.answer(message, self.strings["start_alerts"])
 
     @loader.command()
@@ -239,12 +260,16 @@ class AlertsUa(loader.Module):
         """Зупиняє оновлення тривог."""
         if not self.alert_task or self.alert_task.done():
             await utils.answer(message, self.strings["not_running"])
+            logger.info("Оновлення не запущено")
             return
         try:
+            logger.debug("Спроба зупинити оновлення тривог")
             self.alert_task.cancel()
+            await asyncio.sleep(0.1)  # Даємо час на завершення
             self.alert_task = None
             self.alert_msg_id = None
             self.alert_chat_id = None
+            logger.info("Оновлення тривог зупинено")
             await utils.answer(message, self.strings["stop_alerts"])
         except Exception as e:
             logger.error(f"Помилка зупинки оновлення: {e}")
@@ -255,11 +280,14 @@ class AlertsUa(loader.Module):
         """Показує статус тривог по областях."""
         if not self.token:
             await utils.answer(message, self.strings["no_token"])
+            logger.error("Відсутній токен")
             return
         await utils.answer(message, self.strings["checking"])
+        logger.debug("Отримую статус по областях")
         status = await self.get_oblasts_status()
         if isinstance(status, dict) and "error" in status:
             await utils.answer(message, self.strings["error"].format(error=status["error"]))
+            logger.error(f"Помилка API: {status['error']}")
             return
         status_list = "\n".join([
             self.strings["status_item"].format(oblast=oblast, status=status_desc)
@@ -267,6 +295,7 @@ class AlertsUa(loader.Module):
         ])
         text = self.strings["status_oblast"].format(status=status_list)
         await utils.answer(message, text)
+        logger.debug("Статус по областях успішно відображено")
 
     @loader.command()
     async def alertstatus(self, message):
@@ -274,11 +303,14 @@ class AlertsUa(loader.Module):
         args = utils.get_args_raw(message).strip()
         if not args:
             await utils.answer(message, "❌ <b>Вкажи UID або назву області.</b>")
+            logger.warning("Відсутній аргумент для alertstatus")
             return
         if not self.token:
             await utils.answer(message, self.strings["no_token"])
+            logger.error("Відсутній токен")
             return
         await utils.answer(message, self.strings["checking"])
+        logger.debug(f"Перевірка статусу для {args}")
         uid = None
         try:
             uid = str(int(args))
@@ -289,14 +321,17 @@ class AlertsUa(loader.Module):
                     break
         if not uid:
             await utils.answer(message, self.strings["invalid_uid"])
+            logger.warning(f"Невірний UID або назва: {args}")
             return
         status = await self.get_specific_status(uid)
         if isinstance(status, dict) and "error" in status:
             await utils.answer(message, self.strings["error"].format(error=status["error"]))
+            logger.error(f"Помилка API для UID {uid}: {status['error']}")
             return
         location_name = next((name for name in self.oblasts if args.lower() in name.lower()), "Область")
         text = self.strings["specific_status"].format(location=location_name, status=status)
         await utils.answer(message, text)
+        logger.debug(f"Статус для {location_name}: {status}")
 
     @loader.command()
     async def alerthistory(self, message):
@@ -304,11 +339,14 @@ class AlertsUa(loader.Module):
         args = utils.get_args_raw(message).strip()
         if not args:
             await utils.answer(message, "❌ <b>Вкажи UID або назву області.</b>")
+            logger.warning("Відсутній аргумент для alerthistory")
             return
         if not self.token:
             await utils.answer(message, self.strings["no_token"])
+            logger.error("Відсутній токен")
             return
         await utils.answer(message, self.strings["checking"])
+        logger.debug(f"Отримую історію для {args}")
         uid = None
         try:
             uid = str(int(args))
@@ -319,13 +357,16 @@ class AlertsUa(loader.Module):
                     break
         if not uid:
             await utils.answer(message, self.strings["invalid_uid"])
+            logger.warning(f"Невірний UID або назва: {args}")
             return
         history = await self.get_history(uid)
         if isinstance(history, dict) and "error" in history:
             await utils.answer(message, self.strings["error"].format(error=history["error"]))
+            logger.error(f"Помилка API для UID {uid}: {history['error']}")
             return
         if not history:
             await utils.answer(message, "📜 <b>Історія порожня.</b>")
+            logger.info(f"Історія для {uid} порожня")
             return
         location_name = next((name for name in self.oblasts if args.lower() in name.lower()), "Область")
         history_list = "\n".join([
@@ -337,6 +378,7 @@ class AlertsUa(loader.Module):
         ])
         text = self.strings["history"].format(location=location_name, list=history_list)
         await utils.answer(message, text)
+        logger.debug(f"Історія для {location_name} успішно відображена")
 
     def config(self):
         return {"token": None}
