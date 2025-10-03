@@ -1,4 +1,4 @@
-__version__ = (1, 2, 0)
+__version__ = (1, 3, 0)
 
 import aiohttp
 import logging
@@ -31,7 +31,8 @@ class AlertsUa(loader.Module):
         "start_alerts": "▶️ <b>Розпочато оновлення тривог кожні хвилину.</b>",
         "stop_alerts": "⏹️ <b>Оновлення тривог зупинено.</b>",
         "already_running": "ℹ️ <b>Оновлення вже запущено.</b>",
-        "not_running": "ℹ️ <b>Оновлення не запущено.</b>"
+        "not_running": "ℹ️ <b>Оновлення не запущено.</b>",
+        "alert_init_failed": "❌ <b>Не вдалося ініціалізувати оновлення тривог.</b>"
     }
 
     def __init__(self):
@@ -138,29 +139,30 @@ class AlertsUa(loader.Module):
         while True:
             if not self.token or not self.alert_chat_id or not self.alert_msg_id:
                 logger.error("Немає даних для оновлення тривог")
+                await self.client.send_message(self.alert_chat_id or (await self.client.get_me()).id, self.strings["alert_init_failed"])
                 break
             try:
                 alerts = await self.get_active_alerts()
                 if isinstance(alerts, dict) and "error" in alerts:
                     await self.client.edit_message(self.alert_chat_id, self.alert_msg_id, self.strings["error"].format(error=alerts["error"]))
-                    continue
-                if not alerts:
+                elif not alerts:
                     await self.client.edit_message(self.alert_chat_id, self.alert_msg_id, self.strings["no_alerts"])
-                    await asyncio.sleep(60)
-                    continue
-                alert_list = "\n\n".join([
-                    self.strings["alert_item"].format(
-                        location=item["location_title"],
-                        started_at=item["started_at"][11:16] if item["started_at"] else "Невідомо",
-                        notes=item.get("notes", "Немає"),
-                        type={"air_raid": "Повітряна тривога", "artillery_shelling": "Артилерійський обстріл", "urban_fights": "Міські бої", "chemical": "Хімічна загроза", "nuclear": "Ядерна загроза"}.get(item["alert_type"], item["alert_type"])
-                    ) for item in alerts
-                ])
-                current_time = time.strftime("%H:%M", time.localtime())
-                text = self.strings["active_alerts"].format(list=alert_list, time=current_time)
-                await self.client.edit_message(self.alert_chat_id, self.alert_msg_id, text)
+                else:
+                    alert_list = "\n\n".join([
+                        self.strings["alert_item"].format(
+                            location=item["location_title"],
+                            started_at=item["started_at"][11:16] if item["started_at"] else "Невідомо",
+                            notes=item.get("notes", "Немає"),
+                            type={"air_raid": "Повітряна тривога", "artillery_shelling": "Артилерійський обстріл", "urban_fights": "Міські бої", "chemical": "Хімічна загроза", "nuclear": "Ядерна загроза"}.get(item["alert_type"], item["alert_type"])
+                        ) for item in alerts
+                    ])
+                    current_time = time.strftime("%H:%M", time.localtime())
+                    text = self.strings["active_alerts"].format(list=alert_list, time=current_time)
+                    await self.client.edit_message(self.alert_chat_id, self.alert_msg_id, text)
             except Exception as e:
                 logger.error(f"Помилка оновлення тривог: {e}")
+                await self.client.send_message(self.alert_chat_id, f"❌ <b>Помилка оновлення: {e}</b>")
+                break
             await asyncio.sleep(60)  # Оновлення кожні 60 секунд
 
     @loader.command()
@@ -238,9 +240,15 @@ class AlertsUa(loader.Module):
         if not self.alert_task or self.alert_task.done():
             await utils.answer(message, self.strings["not_running"])
             return
-        self.alert_task.cancel()
-        self.alert_task = None
-        await utils.answer(message, self.strings["stop_alerts"])
+        try:
+            self.alert_task.cancel()
+            self.alert_task = None
+            self.alert_msg_id = None
+            self.alert_chat_id = None
+            await utils.answer(message, self.strings["stop_alerts"])
+        except Exception as e:
+            logger.error(f"Помилка зупинки оновлення: {e}")
+            await utils.answer(message, self.strings["error"].format(error="Не вдалося зупинити оновлення"))
 
     @loader.command()
     async def oblasts(self, message):
