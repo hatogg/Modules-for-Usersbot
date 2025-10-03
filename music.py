@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 
 @loader.tds
 class LyMusicSearch(loader.Module):
-    """Search music via @lytubebot. Usage: .music <song query> or inline query"""
+    """Search music via @lytubebot. Usage: .music <song query>"""
     strings = {
         "name": "LyMusicSearch",
-        "no_args": "❌ Provide a song name.",
-        "searching": "🔍 Searching...",
-        "error": "❌ Error: {}",
-        "no_response": "❌ No response from @lytubebot.",
-        "bot_unavailable": "❌ @lytubebot unavailable."
+        "no_args": "❌ Вкажіть назву пісні.",
+        "searching": "🔍 Пошук...",
+        "error": "❌ Помилка: {}",
+        "no_response": "❌ Немає відповіді від @lytubebot.",
+        "bot_unavailable": "❌ @lytubebot недоступний."
     }
 
     def __init__(self):
@@ -38,12 +38,12 @@ class LyMusicSearch(loader.Module):
             await asyncio.sleep(e.seconds + 1)
             return None
         except Exception as e:
-            logger.error(f"Query error: {e}")
+            logger.error(f"Помилка запиту: {e}")
             return None
 
     @loader.command()
     async def music(self, message: Message):
-        """Search music with @lytubebot. Args: <song query>"""
+        """Пошук музики через @lytubebot. Аргументи: <запит>"""
         args = utils.get_args_raw(message)
         if not args:
             return await utils.answer(message, self.strings("no_args"))
@@ -56,7 +56,7 @@ class LyMusicSearch(loader.Module):
 
         sent_msg = await self._send_query(bot.id, args)
         if not sent_msg:
-            return await utils.answer(message, self.strings("error").format("Failed to send query"))
+            return await utils.answer(message, self.strings("error").format("Не вдалося надіслати запит"))
 
         self.pending_queries[sent_msg.id] = (message.chat_id, message.id)
         try:
@@ -71,7 +71,7 @@ class LyMusicSearch(loader.Module):
         except asyncio.TimeoutError:
             await utils.answer(message, self.strings("no_response"))
         except Exception as e:
-            logger.exception(f"Error: {e}")
+            logger.exception(f"Помилка: {e}")
             await utils.answer(message, self.strings("error").format(str(e)))
         finally:
             self.pending_queries.pop(sent_msg.id, None)
@@ -82,45 +82,8 @@ class LyMusicSearch(loader.Module):
 
     @loader.command()
     async def musichelp(self, message: Message):
-        """Show help"""
+        """Довідка"""
         await utils.answer(message, """
-🆘 **Usage:**
-• Command: `.music <song>`
-• Inline: `@<your_bot> music <song>` (if inline enabled)
-Searches via @lytubebot. Start chat with it first (/start).
+🆘 **Використання:** `.music <пісня>`
+Шукає музику через @lytubebot. Спочатку надішліть /start боту @lytubebot.
         """)
-
-    @loader.inline
-    async def music_inline(self, query: str, message: Message):
-        """Inline music search. Args: <song query>"""
-        if not query:
-            return await self.inline.query_answer(message, self.strings("no_args"))
-
-        try:
-            bot = await self.client.get_entity(self.bot_username)
-            sent_msg = await self._send_query(bot.id, query)
-            if not sent_msg:
-                return await self.inline.query_answer(message, self.strings("error").format("Failed to send query"))
-
-            self.pending_queries[sent_msg.id] = (message.chat_id, message.id)
-            try:
-                response = await self.client.wait_event(
-                    events.NewMessage(chats=bot.id, from_users=bot.id, incoming=True, func=lambda m: m.id > sent_msg.id),
-                    timeout=self.timeout
-                )
-                if response:
-                    return await self.inline.query_answer(message, response.text or "🎵 Music found", forward=response)
-                return await self.inline.query_answer(message, self.strings("no_response"))
-            except asyncio.TimeoutError:
-                return await self.inline.query_answer(message, self.strings("no_response"))
-            finally:
-                self.pending_queries.pop(sent_msg.id, None)
-                try:
-                    await sent_msg.delete()
-                except Exception:
-                    pass
-        except UsernameNotOccupiedError:
-            return await self.inline.query_answer(message, self.strings("bot_unavailable"))
-        except Exception as e:
-            logger.exception(f"Inline error: {e}")
-            return await self.inline.query_answer(message, self.strings("error").format(str(e)))
