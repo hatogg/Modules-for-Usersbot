@@ -1,8 +1,8 @@
-__version__ = (1, 2, 0)
+__version__ = (1, 3, 0)
 
 from telethon import events
 from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
-from telethon.errors import UsernameInvalidError, PeerIdInvalidError, UserAlreadyParticipantError
+from telethon.errors import UsernameInvalidError, PeerIdInvalidError
 import logging
 import re
 
@@ -25,40 +25,26 @@ class SaveDeleted(loader.Module):
         "no_save_chat": "❌ <b>Чат для збереження не встановлено.</b>",
         "auto_created": "✅ <b>Автоматично створено чат для збереження: Saved Messages</b>\nТут будуть надсилатися видалені повідомлення.",
         "invalid_link": "❌ <b>Невірне посилання або ID. Спробуй username, ID або t.me/username.</b>",
-        "subscribed": "✅ <b>Підписано на канал t.me/devx44to!</b>",
-        "already_subscribed": "ℹ️ <b>Ви вже підписані на t.me/devx44to.</b>",
-        "subscribe_failed": "❌ <b>Не вдалося підписатися на t.me/devx44to: {error}</b>",
     }
 
     def __init__(self):
-        self.save_chat = self.config["save_chat"]
-        self.enabled_chats = self.config["enabled_chats"] or []
+        self.save_chat = None
+        self.enabled_chats = []
         self.messages = {}
-        self.subscribed = self.config.get("subscribed", False)  # Прапорець підписки
 
     async def client_ready(self, client, db):
         self.client = client
+        self.db = db
         me = await client.get_me()
 
-        # Автоматична підписка на t.me/devx44to
-        if not self.subscribed:
-            try:
-                await client(JoinChannelRequest('t.me/devx44to'))
-                self.subscribed = True
-                self.config["subscribed"] = True
-                await client.send_message(me.id, self.strings["subscribed"])
-            except UserAlreadyParticipantError:
-                self.subscribed = True
-                self.config["subscribed"] = True
-                await client.send_message(me.id, self.strings["already_subscribed"])
-            except Exception as e:
-                logger.error(f"Помилка при підписці на канал: {e}")
-                await client.send_message(me.id, self.strings["subscribe_failed"].format(error=str(e)))
+        # Завантаження конфігурації
+        self.save_chat = self.get("save_chat", None)
+        self.enabled_chats = self.get("enabled_chats", [])
 
         # Налаштування чату для збереження
         if self.save_chat is None:
             self.save_chat = me.id  # Saved Messages за замовчуванням
-            self.config["save_chat"] = self.save_chat
+            self.set("save_chat", self.save_chat)
             try:
                 await client.send_message(self.save_chat, "🗑️ <b>SaveDeleted by X44TO активовано!</b>\nТут будуть зберігатися видалені та відредаговані повідомлення з моніторингових чатів.")
                 await utils.answer(self, self.strings["auto_created"])
@@ -70,7 +56,7 @@ class SaveDeleted(loader.Module):
                 self.strings["save_chat_set"] = self.strings["save_chat_set"].format(chat=utils.escape_html(entity.title or entity.first_name or "Saved Messages"))
             except:
                 self.save_chat = me.id
-                self.config["save_chat"] = self.save_chat
+                self.set("save_chat", self.save_chat)
                 await client.send_message(self.save_chat, "🗑️ <b>SaveDeleted by X44TO активовано!</b>\nТут будуть зберігатися видалені та відредаговані повідомлення з моніторингових чатів.")
                 await utils.answer(self, self.strings["auto_created"])
 
@@ -102,7 +88,7 @@ class SaveDeleted(loader.Module):
         try:
             entity = await self.client.get_entity(parsed)
             self.save_chat = entity.id
-            self.config["save_chat"] = self.save_chat
+            self.set("save_chat", self.save_chat)
             chat_title = entity.title or entity.first_name or "Saved Messages"
             await utils.answer(message, self.strings["save_chat_set"].format(chat=utils.escape_html(chat_title)))
         except (UsernameInvalidError, PeerIdInvalidError):
@@ -114,7 +100,7 @@ class SaveDeleted(loader.Module):
     async def saveoff(self, message):
         """Вимикає збереження видалених повідомлень."""
         self.save_chat = None
-        self.config["save_chat"] = None
+        self.set("save_chat", None)
         await utils.answer(message, "✅ <b>Збереження вимкнено.</b>")
 
     @loader.command()
@@ -123,7 +109,7 @@ class SaveDeleted(loader.Module):
         args = utils.get_args_raw(message)
         if not args:
             self.enabled_chats = []
-            self.config["enabled_chats"] = self.enabled_chats
+            self.set("enabled_chats", self.enabled_chats)
             await utils.answer(message, self.strings["save_off"].format(chat=self.strings["all_chats"]))
             return
         parsed = self.parse_entity_arg(args)
@@ -135,7 +121,7 @@ class SaveDeleted(loader.Module):
             chat_id = entity.id
             if chat_id not in self.enabled_chats:
                 self.enabled_chats.append(chat_id)
-                self.config["enabled_chats"] = self.enabled_chats
+                self.set("enabled_chats", self.enabled_chats)
             chat_title = entity.title or entity.first_name or "невідомий"
             await utils.answer(message, self.strings["save_on"].format(chat=utils.escape_html(chat_title)))
         except (UsernameInvalidError, PeerIdInvalidError):
@@ -149,7 +135,7 @@ class SaveDeleted(loader.Module):
         args = utils.get_args_raw(message)
         if not args:
             self.enabled_chats = [0]
-            self.config["enabled_chats"] = self.enabled_chats
+            self.set("enabled_chats", self.enabled_chats)
             await utils.answer(message, self.strings["save_on"].format(chat=self.strings["all_chats"]))
             return
         parsed = self.parse_entity_arg(args)
@@ -161,7 +147,7 @@ class SaveDeleted(loader.Module):
             chat_id = entity.id
             if chat_id in self.enabled_chats:
                 self.enabled_chats.remove(chat_id)
-                self.config["enabled_chats"] = self.enabled_chats
+                self.set("enabled_chats", self.enabled_chats)
             chat_title = entity.title or entity.first_name or "невідомий"
             await utils.answer(message, self.strings["save_off"].format(chat=utils.escape_html(chat_title)))
         except (UsernameInvalidError, PeerIdInvalidError):
@@ -244,10 +230,3 @@ class SaveDeleted(loader.Module):
             return entity.title or entity.first_name or "невідомий"
         except:
             return f"ID {chat_id}"
-
-    def config(self):
-        return {
-            "save_chat": None,
-            "enabled_chats": [],
-            "subscribed": False,  # Прапорець для підписки
-        }
